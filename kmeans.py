@@ -82,7 +82,13 @@ def euclideanDist(point, pointArray):
 
 
 def initCentroids(numdf, k):
-    return np.array(numdf.sample(k))
+    if k>=len(numdf):
+        print('k cannot be bigger than the length of data')
+        exit(1)
+    sample=np.array(numdf.sample(k))
+    while len(np.unique(sample)) < k:
+        sample=np.array(numdf.sample(k))
+    return sample
 
 
 # In[7]:
@@ -90,12 +96,18 @@ def initCentroids(numdf, k):
 
 # pass a ***vectorized*** distance function: dist(point, pointArray)
 # dataframe must be numeric other than last column
-def assignCentroids(numdf, centroids, distfunc):
+def assignCentroids(numdf, centroids, distfunc, getNumAssign = False):
     if df.columns[-1] != 'cluster':
         df['cluster'] = -1
-        
+    numAssign=0
     for i, row in df.iloc[:,:-1].iterrows():
-        df.at[i,'cluster'] = np.argmin(distfunc(row.values, centroids))
+        prev = df.at[i,'cluster']
+        new = np.argmin(distfunc(row.values, centroids))
+        if prev != new:
+            numAssign += 1
+        df.at[i,'cluster'] = new
+    if getNumAssign:
+        return df, numAssign
     return df
 
 
@@ -137,7 +149,7 @@ def calcTotSSE(numdf, centroids, distFunc):
 # In[11]:
 
 
-def kmeans_lite(df, centroids, distFunc):
+def kmeans_sse(df, centroids, distFunc, minSSE):
     df = assignCentroids(df, centroids, distFunc)
     prevSSE = calcTotSSE(df, centroids, distFunc)
     
@@ -146,11 +158,28 @@ def kmeans_lite(df, centroids, distFunc):
     currSSE = calcTotSSE(df, centroids, distFunc)
     
     counter = 0
-    while counter < 10 and prevSSE - currSSE > 0.01:
+    while counter < 10 and prevSSE - currSSE > minSSE:
+        print(currSSE)
         centroids = reCalcCentroids(df, centroids)
         df = assignCentroids(df, centroids, distFunc)
         prevSSE = currSSE
         currSSE = calcTotSSE(df, centroids, distFunc)
+        counter += 1
+    return df, centroids
+
+def kmeans_reassign(df, centroids, distFunc, minReassign):
+    df, numAssign = assignCentroids(df, centroids, distFunc, getNumAssign=True)
+    print(f"{numAssign} points reassigned")
+    
+    centroids = reCalcCentroids(df, centroids)
+    df, numAssign = assignCentroids(df, centroids, distFunc, getNumAssign=True)
+    print(f"{numAssign} points reassigned")
+    
+    counter = 0
+    while counter < 100 and numAssign > minReassign:
+        centroids = reCalcCentroids(df, centroids)
+        df, numAssign = assignCentroids(df, centroids, distFunc, getNumAssign=True)
+        print(f"{numAssign} points reassigned")
         counter += 1
     return df, centroids
 
@@ -167,6 +196,8 @@ def analyzeClusters(df, centroids, distFunc):
         info = {}
         info["clusterID"] = i
         pnts = df[df['cluster'] == i]
+        if len(pnts) == 0:
+            continue
         
         info["SSE"] = calcSSE(np.array(pnts.iloc[:,:-1]), c, distFunc)
         info["centroid"] = c
@@ -224,29 +255,36 @@ def hyperparams(df, restr, epsmin, epsmax, mptsmin, mptsmax):
 # In[53]:
 
 
-# k=4
-
-# sys.argv = f"dbscan.py ./data/4clusters.csv {k}".split(" ")
 if __name__ == "__main__":
-    if len(sys.argv) == 3:
-        _, datafile, k = sys.argv
+    normalized = None
+    if len(sys.argv) == 4:
+        _, datafile, k, stoppage = sys.argv
+        if stoppage != 'assign' and stoppage != 'SSE':
+            print("Usage: python3 dbscan.py <datafile.csv> <k> <stoppage=assign | SSE> [normalize? T/F]=F")
+            exit(1)    
+    elif len(sys.argv) == 5:
+        _, datafile, k, stoppage, normalized = sys.argv
+        if stoppage != 'assign' and normalized != 'SSE':
+            print("Usage: python3 dbscan.py <datafile.csv> <k> <stoppage=assign | SSE> [normalize? T/F]=F")
+            exit(1) 
+        if normalized != 'T' and normalized != 'F':
+            print("Usage: python3 dbscan.py <datafile.csv> <k> <stoppage=assign | SSE> [normalize? T/F]=F")
+            exit(1)        
     else:
-        print("Usage: python3 dbscan.py <datafile.csv> <k>")
+        print("Usage: python3 dbscan.py <datafile.csv> <k> <stoppage=assign | SSE> [normalize? T/F]=F")
         exit(1)
         
     k = int(k)
     df_full, restr = readFiles(datafile)
-    df, dropped = restrictdf(df_full, restr) #, getDropped=True)
-#     df = df
+    df = restrictdf(df_full, restr)
+    if normalized is not None and normalized == 'T':
+        df = normalizedf(df)
+
     centroids = initCentroids(df,k)
-    df, centroids = kmeans_lite(df, centroids, euclideanDist)
-#     df.plot.scatter(x=0,y=1,c='cluster',colormap='viridis')    
+    
+    if stoppage == 'SSE':
+        df, centroids = kmeans_sse(df, centroids, euclideanDist, 0.1)
+    else:
+        df, centroids = kmeans_reassign(df, centroids, euclideanDist, 2)
 
-    printClusterInfo(analyzeClusters(df, centroids, euclideanDist), extraCols = dropped)
-
-
-# In[ ]:
-
-
-
-
+    printClusterInfo(analyzeClusters(df, centroids, euclideanDist))
